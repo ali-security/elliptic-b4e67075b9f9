@@ -111,6 +111,68 @@ describe('EDDSA(\'ed25519\')', function() {
     assert(key.verify(msg, sig));
   });
 
+  describe('signature length', function() {
+    var secret = toArray(new Array(65).join('0'), 'hex');
+
+    // A malformed signature must either throw or fail to verify
+    function rejects(fn) {
+      try {
+        return fn() === false;
+      } catch (e) {
+        return true;
+      }
+    }
+
+    it('rejects signatures with trailing bytes', function() {
+      var msg = [ 0xB, 0xE, 0xE, 0xF ];
+      var key = ed25519.keyFromSecret(secret);
+      var sig = key.sign(msg).toHex();
+      assert(key.verify(msg, sig));
+
+      assert(rejects(function() {
+        return key.verify(msg, sig + '00');
+      }), 'hex signature with trailing zero byte must not verify');
+
+      assert(rejects(function() {
+        return key.verify(msg, sig + '0000');
+      }), 'hex signature with trailing zero bytes must not verify');
+
+      var bytes = toArray(sig, 'hex').concat([ 0 ]);
+      assert(rejects(function() {
+        return key.verify(msg, bytes);
+      }), 'byte signature with trailing zero byte must not verify');
+
+      assert(rejects(function() {
+        return ed25519.verify(msg, sig + '00', key.getPublic());
+      }), 'EDDSA#verify must reject signature with trailing zero byte');
+    });
+
+    it('rejects truncated signatures', function() {
+      var key = ed25519.keyFromSecret(secret);
+      var msg;
+      var sig;
+      // Find a signature whose most significant S byte is zero, so that
+      // dropping it does not change the decoded S value
+      for (var i = 0; i < 256; i++) {
+        msg = [ i ];
+        sig = key.sign(msg).toHex();
+        if (sig.slice(-2) === '00')
+          break;
+      }
+      assert.equal(sig.slice(-2), '00');
+      assert(key.verify(msg, sig));
+
+      var truncated = sig.slice(0, -2);
+      assert(rejects(function() {
+        return key.verify(msg, truncated);
+      }), 'truncated signature must not verify');
+
+      assert(rejects(function() {
+        return key.verify(msg, toArray(truncated, 'hex'));
+      }), 'truncated byte signature must not verify');
+    });
+  });
+
   describe('KeyPair', function() {
     var pair;
     var secret = '00000000000000000000000000000000' +

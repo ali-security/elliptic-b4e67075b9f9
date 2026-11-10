@@ -500,4 +500,120 @@ describe('ECDSA', function() {
       assert.equal(sig.recoveryParam, 1);
     });
   });
+
+  describe('DER signature malleability', function () {
+    // A malformed signature must either throw or fail to verify
+    function rejects(fn) {
+      try {
+        return fn() === false;
+      } catch (e) {
+        return true;
+      }
+    }
+
+    function pad(bytes) {
+      if (bytes[0] & 0x80)
+        return [ 0 ].concat(bytes);
+      return bytes;
+    }
+
+    function encode(r, s) {
+      var body = [ 0x02, r.length ].concat(r, [ 0x02, s.length ], s);
+      return [ 0x30, body.length ].concat(body);
+    }
+
+    function findSignature(ecdsa, keys, predicate) {
+      for (var i = 0; i < 256; i++) {
+        var m = new BN(i + 1).toString(16, 64);
+        var sig = ecdsa.sign(m, keys);
+        if (predicate(sig))
+          return { msg: m, sig: sig };
+      }
+      throw new Error('No matching signature found');
+    }
+
+    it('should reject BER signature with leading zero length octet',
+      function () {
+        var ecdsa = new elliptic.ec('p521');
+        var keys = ecdsa.genKeyPair({ entropy: entropy });
+        var der = ecdsa.sign(msg, keys).toDER();
+        assert(ecdsa.verify(msg, der, keys), 'DER encoded verify');
+
+        // p521 signatures need a long-form sequence length: 0x81 LL
+        assert.equal(der[1], 0x81);
+        assert(der[2] > 0x7f);
+
+        // Re-encode the same length non-minimally (BER): 0x82 0x00 LL
+        var ber = [ 0x30, 0x82, 0x00, der[2] ].concat(der.slice(3));
+        assert(rejects(function () {
+          return ecdsa.verify(msg, ber, keys);
+        }), 'BER (0x82 0x00 LL) signature must not verify');
+
+        var ber2 = [ 0x30, 0x83, 0x00, 0x00, der[2] ].concat(der.slice(3));
+        assert(rejects(function () {
+          return ecdsa.verify(msg, ber2, keys);
+        }), 'BER (0x83 0x00 0x00 LL) signature must not verify');
+      });
+
+    it('should reject BER-encoded r/s lengths', function () {
+      var ecdsa = new elliptic.ec('secp256k1');
+      var keys = ecdsa.genKeyPair({ entropy: entropy });
+      var sig = ecdsa.sign(msg, keys);
+      var r = pad(sig.r.toArray());
+      var s = pad(sig.s.toArray());
+
+      var body = [ 0x02, 0x82, 0x00, r.length ].concat(r,
+        [ 0x02, s.length ], s);
+      var ber = [ 0x30, body.length ].concat(body);
+      assert(rejects(function () {
+        return ecdsa.verify(msg, ber, keys);
+      }), 'BER encoded r length must not verify');
+
+      body = [ 0x02, r.length ].concat(r, [ 0x02, 0x82, 0x00, s.length ], s);
+      ber = [ 0x30, body.length ].concat(body);
+      assert(rejects(function () {
+        return ecdsa.verify(msg, ber, keys);
+      }), 'BER encoded s length must not verify');
+    });
+
+    it('should reject DER signature with negative r', function () {
+      var ecdsa = new elliptic.ec('secp256k1');
+      var keys = ecdsa.genKeyPair({ entropy: entropy });
+      var found = findSignature(ecdsa, keys, function (sig) {
+        return (sig.r.toArray()[0] & 0x80) !== 0;
+      });
+      var r = found.sig.r.toArray();
+      var s = pad(found.sig.s.toArray());
+
+      var valid = encode(pad(r), s);
+      assert.deepEqual(valid, found.sig.toDER());
+      assert(ecdsa.verify(found.msg, valid, keys), 'DER encoded verify');
+
+      // Strip the 0x00 padding byte: r becomes a negative DER INTEGER
+      var malleated = encode(r, s);
+      assert(rejects(function () {
+        return ecdsa.verify(found.msg, malleated, keys);
+      }), 'negative r must not verify');
+    });
+
+    it('should reject DER signature with negative s', function () {
+      var ecdsa = new elliptic.ec('secp256k1');
+      var keys = ecdsa.genKeyPair({ entropy: entropy });
+      var found = findSignature(ecdsa, keys, function (sig) {
+        return (sig.s.toArray()[0] & 0x80) !== 0;
+      });
+      var r = pad(found.sig.r.toArray());
+      var s = found.sig.s.toArray();
+
+      var valid = encode(r, pad(s));
+      assert.deepEqual(valid, found.sig.toDER());
+      assert(ecdsa.verify(found.msg, valid, keys), 'DER encoded verify');
+
+      // Strip the 0x00 padding byte: s becomes a negative DER INTEGER
+      var malleated = encode(r, s);
+      assert(rejects(function () {
+        return ecdsa.verify(found.msg, malleated, keys);
+      }), 'negative s must not verify');
+    });
+  });
 });
